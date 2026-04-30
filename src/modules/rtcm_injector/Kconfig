@@ -1,0 +1,15 @@
+menuconfig MODULES_RTCM_INJECTOR
+	bool "rtcm_injector"
+	default n
+	---help---
+		Enable RTCM Serial Injector module for external differential radio support.
+
+		This module reads RTCM3 differential correction data from a serial port
+		(typically connected to an external differential radio) and forwards it
+		to the GPS module via the gps_inject_data uORB topic for RTK positioning.
+
+		The module performs RTCM3 frame parsing with CRC-24Q validation and
+		supports configurable serial port and baudrate via parameters:
+		- RTCM_INJ_EN: Enable/disable module
+		- RTCM_INJ_PORT: Serial port selection (TELEM1-4)
+		- RTCM_INJ_BAUD: Baudrate configuration
