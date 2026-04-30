@@ -439,6 +439,14 @@ else
 	# Must be started after the serial config is read
 	rc_input start $RC_INPUT_ARGS
 
+	#
+	# Start RTCM injector if enabled
+	#
+	if param compare -s RTCM_INJ_EN 1
+	then
+		rtcm_injector start
+	fi
+
 	# Manages USB interface
 	if ! cdcacm_autostart start
 	then
