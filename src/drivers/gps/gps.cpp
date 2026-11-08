@@ -73,6 +73,7 @@
 # include "devices/src/mtk.h"
 # include "devices/src/femtomes.h"
 # include "devices/src/nmea.h"
+# include "devices/src/unicore_driver.h"
 
 #endif // CONSTRAINED_FLASH
 #include "devices/src/ubx.h"
@@ -96,6 +97,8 @@ enum class gps_driver_mode_t {
 	EMLIDREACH,
 	FEMTOMES,
 	NMEA,
+	UNICORERTCM,
+	UNICORENEMA
 };
 
 enum class gps_dump_comm_mode_t : int32_t {
@@ -359,6 +362,10 @@ GPS::GPS(const char *path, gps_driver_mode_t mode, GPSHelper::Interface interfac
 		case 5: _mode = gps_driver_mode_t::FEMTOMES; break;
 
 		case 6: _mode = gps_driver_mode_t::NMEA; break;
+
+		case 7: _mode = gps_driver_mode_t::UNICORERTCM; break;
+
+		case 8: _mode = gps_driver_mode_t::UNICORENEMA; break;
 #endif // CONSTRAINED_FLASH
 		}
 	}
@@ -875,6 +882,16 @@ GPS::run()
 			_helper = new GPSDriverNMEA(&GPS::callback, this, &_report_gps_pos, _p_report_sat_info, heading_offset);
 			set_device_type(DRV_GPS_DEVTYPE_NMEA);
 			break;
+
+		case gps_driver_mode_t::UNICORERTCM:
+			_helper = new GPSDriverUnicore(&GPS::callback, this, &_report_gps_pos, _p_report_sat_info, heading_offset);
+			set_device_type(DRV_GPS_DEVTYPE_UNICORE);
+			break;
+
+		case gps_driver_mode_t::UNICORENEMA:
+			_helper = new GPSDriverNMEA(&GPS::callback, this, &_report_gps_pos, _p_report_sat_info, heading_offset);
+			set_device_type(DRV_GPS_DEVTYPE_UNICORE);
+			break;
 #endif // CONSTRAINED_FLASH
 
 		default:
@@ -884,6 +901,15 @@ GPS::run()
 		_baudrate = _configured_baudrate;
 		GPSHelper::GPSConfig gpsConfig{};
 		gpsConfig.gnss_systems = static_cast<GPSHelper::GNSSSystemsMask>(gnssSystemsParam);
+
+		// Configure target baudrate for GPS module (used by Unicore driver)
+		char baud_param_name[17];
+		snprintf(baud_param_name, sizeof(baud_param_name), "GPS_%i_BAUD", (int)_instance + 1);
+		int32_t target_baudrate = 460800;
+
+		if (param_get(param_find(baud_param_name), &target_baudrate) == 0 && target_baudrate > 0) {
+			gpsConfig.target_baudrate = static_cast<uint32_t>(target_baudrate);
+		}
 
 		if (_instance == Instance::Main && _dump_communication_mode == gps_dump_comm_mode_t::RTCM) {
 			gpsConfig.output_mode = GPSHelper::OutputMode::GPSAndRTCM;
@@ -1051,7 +1077,16 @@ GPS::run()
 				break;
 
 			case gps_driver_mode_t::FEMTOMES:
+				_mode = gps_driver_mode_t::UNICORERTCM;
+				break;
+
+			case gps_driver_mode_t::UNICORERTCM:
+				_mode = gps_driver_mode_t::UBX;
+				px4_usleep(500000); // tried all possible drivers. Wait a bit before next round
+				break;
+
 			case gps_driver_mode_t::NMEA: // skip NMEA for auto-detection to avoid false positive matching
+			case gps_driver_mode_t::UNICORENEMA: // skip UNICORE NMEA for auto-detection to avoid false positive matching
 
 #endif // CONSTRAINED_FLASH
 				_mode = gps_driver_mode_t::UBX;
@@ -1112,6 +1147,15 @@ GPS::print_status()
 
 	case gps_driver_mode_t::NMEA:
 		PX4_INFO("protocol: NMEA");
+		break;
+
+	case gps_driver_mode_t::UNICORERTCM:
+		PX4_INFO("protocol: unicore RTCM");
+		break;
+
+	case gps_driver_mode_t::UNICORENEMA:
+		PX4_INFO("protocol: unicore NMEA");
+		break;
 #endif // CONSTRAINED_FLASH
 
 	default:
@@ -1341,7 +1385,7 @@ $ gps reset warm
 
 	PRINT_MODULE_USAGE_PARAM_STRING('i', "uart", "spi|uart", "GPS interface", true);
 	PRINT_MODULE_USAGE_PARAM_STRING('j', "uart", "spi|uart", "secondary GPS interface", true);
-	PRINT_MODULE_USAGE_PARAM_STRING('p', nullptr, "ubx|mtk|ash|eml|fem|nmea", "GPS Protocol (default=auto select)", true);
+	PRINT_MODULE_USAGE_PARAM_STRING('p', nullptr, "ubx|mtk|ash|eml|fem|nmea|unicorertcm|unicorenema", "GPS Protocol (default=auto select)", true);
 
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 	PRINT_MODULE_USAGE_COMMAND_DESCR("reset", "Reset GPS device");
@@ -1483,6 +1527,12 @@ GPS *GPS::instantiate(int argc, char *argv[], Instance instance)
 
 			} else if (!strcmp(myoptarg, "nmea")) {
 				mode = gps_driver_mode_t::NMEA;
+
+			} else if (!strcmp(myoptarg, "unicorertcm") || !strcmp(myoptarg, "UnicoreRTCM")) {
+				mode = gps_driver_mode_t::UNICORERTCM;
+
+			} else if (!strcmp(myoptarg, "unicorenema") || !strcmp(myoptarg, "UnicoreNEMA")) {
+				mode = gps_driver_mode_t::UNICORENEMA;
 
 #endif // CONSTRAINED_FLASH
 			} else {

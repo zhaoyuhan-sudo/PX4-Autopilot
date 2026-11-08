@@ -50,7 +50,8 @@ px4_add_module(
 		devices/src/femtomes.cpp
 		devices/src/nmea.cpp
 		devices/src/unicore.cpp
-		devices/src/crc.cpp
+		devices/src/unicore_RTCM.cpp
+		devices/src/unicore_driver.cpp
 	MODULE_CONFIG
 		module.yaml
 	DEPENDS

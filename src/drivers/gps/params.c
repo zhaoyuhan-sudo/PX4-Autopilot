@@ -177,7 +177,7 @@ PARAM_DEFINE_FLOAT(GPS_YAW_OFFSET, 0.f);
  * Auto-detection will probe all protocols, and thus is a bit slower.
  *
  * @min 0
- * @max 7
+ * @max 8
  * @value 0 Auto detect
  * @value 1 u-blox
  * @value 2 MTK
@@ -185,11 +185,13 @@ PARAM_DEFINE_FLOAT(GPS_YAW_OFFSET, 0.f);
  * @value 4 Emlid Reach
  * @value 5 Femtomes
  * @value 6 NMEA (generic)
+ * @value 7 Unicore RTCM
+ * @value 8 Unicore NMEA
  *
  * @reboot_required true
  * @group GPS
  */
-PARAM_DEFINE_INT32(GPS_1_PROTOCOL, 1);
+PARAM_DEFINE_INT32(GPS_1_PROTOCOL, 7);
 
 /**
  * Protocol for Secondary GPS
@@ -199,7 +201,7 @@ PARAM_DEFINE_INT32(GPS_1_PROTOCOL, 1);
  * Auto-detection will probe all protocols, and thus is a bit slower.
  *
  * @min 0
- * @max 6
+ * @max 8
  * @value 0 Auto detect
  * @value 1 u-blox
  * @value 2 MTK
@@ -207,11 +209,51 @@ PARAM_DEFINE_INT32(GPS_1_PROTOCOL, 1);
  * @value 4 Emlid Reach
  * @value 5 Femtomes
  * @value 6 NMEA (generic)
+ * @value 7 Unicore RTCM
+ * @value 8 Unicore NMEA
  *
  * @reboot_required true
  * @group GPS
  */
 PARAM_DEFINE_INT32(GPS_2_PROTOCOL, 1);
+
+/**
+ * Baudrate for Main GPS
+ *
+ * Target baudrate used to configure the main GPS module.
+ * For Unicore modules this is the baudrate the module will be configured to output.
+ *
+ * @min 9600
+ * @max 921600
+ * @unit bit/s
+ * @value 115200 115200 baud
+ * @value 230400 230400 baud
+ * @value 460800 460800 baud
+ * @value 921600 921600 baud
+ *
+ * @reboot_required true
+ * @group GPS
+ */
+PARAM_DEFINE_INT32(GPS_1_BAUD, 460800);
+
+/**
+ * Baudrate for Secondary GPS
+ *
+ * Target baudrate used to configure the secondary GPS module.
+ * For Unicore modules this is the baudrate the module will be configured to output.
+ *
+ * @min 9600
+ * @max 921600
+ * @unit bit/s
+ * @value 115200 115200 baud
+ * @value 230400 230400 baud
+ * @value 460800 460800 baud
+ * @value 921600 921600 baud
+ *
+ * @reboot_required true
+ * @group GPS
+ */
+PARAM_DEFINE_INT32(GPS_2_BAUD, 460800);
 
 /**
  * GNSS Systems for Primary GPS (integer bitmask)
