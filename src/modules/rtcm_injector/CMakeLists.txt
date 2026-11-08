@@ -34,11 +34,9 @@
 px4_add_module(
 	MODULE modules__rtcm_injector
 	MAIN rtcm_injector
-	STACK_MAIN 2048
+	STACK_MAIN 3072
+	MODULE_CONFIG
+		module.yaml
 	SRCS
 		rtcm_injector_main.cpp
-	DEPENDS
-		px4_platform
-		px4_layer
-		px4_work_queue
 	)

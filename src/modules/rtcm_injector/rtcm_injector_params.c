@@ -76,5 +76,14 @@ PARAM_DEFINE_INT32(RTCM_INJ_PORT, 1);
  * @reboot_required true
  * @group RTCM Injector
  */
-PARAM_DEFINE_INT32(RTCM_INJ_BAUD, 57600);
+PARAM_DEFINE_INT32(RTCM_INJ_BAUD, 460800);
 
+/**
+ * RTCM Injector Debug Mode
+ *
+ * Enable debug output for received raw bytes (hex dump).
+ *
+ * @boolean
+ * @group RTCM Injector
+ */
+PARAM_DEFINE_INT32(RTCM_INJ_DEBUG, 0);

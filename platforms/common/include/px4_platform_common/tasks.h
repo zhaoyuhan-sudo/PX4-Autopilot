@@ -145,6 +145,14 @@ typedef struct {
 // system execution
 #define SCHED_PRIORITY_SLOW_DRIVER		(PX4_WQ_HP_BASE - 35)
 
+// RTCM differential correction injection
+// Time-critical for RTK positioning: RTCM data must be forwarded to the
+// GPS receiver before the current epoch is processed.
+// - Must run below the GPS driver (SCHED_PRIORITY_SLOW_DRIVER is too low for RTK)
+// - Must run above telemetry, logger and other background tasks
+// Priority chosen to satisfy 10Hz GPS + 1Hz RTCM with margin for 20Hz GPS + 5Hz RTCM.
+#define SCHED_PRIORITY_RTCM_INJECTOR		(PX4_WQ_HP_BASE - 15)
+
 // The navigation system needs to execute regularly but has no realtime needs
 #define SCHED_PRIORITY_NAVIGATION		(SCHED_PRIORITY_DEFAULT + 5)
 //      SCHED_PRIORITY_DEFAULT

@@ -32,8 +32,9 @@
  ****************************************************************************/
 
 /**
- * @file rtcm_injector_main.cpp
- * RTCM Serial Injector - reads RTCM3 data from serial port and forwards to GPS
+ * @file rtcm_injector_simple.cpp
+ * RTCM Serial Passthrough - reads raw data from serial port and forwards to GPS
+ * No parsing or validation - GPS device handles frame sync and CRC
  *
  * @author PX4 Development Team
  */
@@ -47,206 +48,23 @@
 #include <lib/parameters/param.h>
 #include <uORB/Publication.hpp>
 #include <uORB/topics/gps_inject_data.h>
-
+#include <cerrno>
 #include <cstring>
 
-static constexpr uint8_t RTCM3_PREAMBLE = 0xD3;
-static constexpr uint16_t RTCM3_MAX_PAYLOAD_LEN = 1023;
-static constexpr uint16_t RTCM3_MAX_FRAME_LEN = 1029; // 1 + 2 + 1023 + 3
-
 /**
- * Calculate RTCM3 CRC-24Q
- * Polynomial: 0x1864CFB
- * Computed over length bytes + payload bytes (not including preamble or CRC)
- */
-static uint32_t crc24q(const uint8_t *data, uint16_t len)
-{
-	constexpr uint32_t poly = 0x1864CFB;
-	uint32_t crc = 0;
-
-	for (uint16_t i = 0; i < len; i++) {
-		crc ^= ((uint32_t)data[i]) << 16;
-
-		for (int j = 0; j < 8; j++) {
-			crc <<= 1;
-
-			if (crc & 0x1000000) {
-				crc ^= poly;
-			}
-		}
-	}
-
-	return crc & 0xFFFFFF;
-}
-
-/**
- * RTCM3 Frame Parser
+ * RTCM Serial Passthrough Module
  *
- * State machine for parsing RTCM3 frames with CRC-24Q validation.
- * Supports frames up to 1023 bytes payload.
- */
-class RTCMParser
-{
-public:
-	enum class ParseState {
-		SearchPreamble,
-		GetLength,
-		GetPayload,
-		GetCRC
-	};
-
-	struct Statistics {
-		uint32_t frames_received{0};
-		uint32_t bytes_received{0};
-		uint32_t crc_errors{0};
-		uint32_t buffer_overflows{0};
-	};
-
-	RTCMParser()
-	{
-		reset();
-	}
-
-	/**
-	 * Add byte to parser
-	 * @param byte Input byte
-	 * @return 0=continue parsing, 1=frame complete and valid, -1=CRC error
-	 */
-	int addByte(uint8_t byte)
-	{
-		switch (_state) {
-		case ParseState::SearchPreamble:
-			if (byte == RTCM3_PREAMBLE) {
-				_buffer[0] = byte;
-				_buffer_pos = 1;
-				_state = ParseState::GetLength;
-			}
-
-			break;
-
-		case ParseState::GetLength:
-			_buffer[_buffer_pos++] = byte;
-
-			if (_buffer_pos == 3) {
-				// Extract 10-bit length from bytes 1-2
-				// Byte 1: 6 reserved bits + 2 MSB of length
-				// Byte 2: 8 LSB of length
-				_payload_len = (((uint16_t)_buffer[1] & 0x03) << 8) | _buffer[2];
-
-				if (_payload_len > RTCM3_MAX_PAYLOAD_LEN) {
-					// Invalid length, reset and continue searching
-					_stats.buffer_overflows++;
-					reset();
-					return 0;
-				}
-
-				if (_payload_len == 0) {
-					// Empty payload, go directly to CRC
-					_state = ParseState::GetCRC;
-					_crc_pos = 0;
-
-				} else {
-					_state = ParseState::GetPayload;
-				}
-			}
-
-			break;
-
-		case ParseState::GetPayload:
-			_buffer[_buffer_pos++] = byte;
-
-			if (_buffer_pos == 3 + _payload_len) {
-				// Payload complete, now get CRC
-				_state = ParseState::GetCRC;
-				_crc_pos = 0;
-			}
-
-			break;
-
-		case ParseState::GetCRC:
-			_buffer[_buffer_pos++] = byte;
-			_crc_pos++;
-
-			if (_crc_pos == 3) {
-				// Frame complete, verify CRC
-				// CRC is computed over length bytes (2) + payload bytes
-				uint32_t crc_calc = crc24q(_buffer + 1, 2 + _payload_len);
-				uint32_t crc_recv = ((uint32_t)_buffer[_buffer_pos - 3] << 16) |
-						    ((uint32_t)_buffer[_buffer_pos - 2] << 8) |
-						    _buffer[_buffer_pos - 1];
-
-				if (crc_calc == crc_recv) {
-					_stats.frames_received++;
-					_stats.bytes_received += _buffer_pos;
-					return 1; // Frame complete and valid
-
-				} else {
-					_stats.crc_errors++;
-					reset();
-					return -1; // CRC error
-				}
-			}
-
-			break;
-		}
-
-		return 0; // Continue parsing
-	}
-
-	/**
-	 * Get pointer to complete frame buffer
-	 */
-	const uint8_t *getFrame() const
-	{
-		return _buffer;
-	}
-
-	/**
-	 * Get length of complete frame
-	 */
-	uint16_t getFrameLength() const
-	{
-		return _buffer_pos;
-	}
-
-	/**
-	 * Get parser statistics
-	 */
-	const Statistics &getStatistics() const
-	{
-		return _stats;
-	}
-
-	/**
-	 * Reset parser to initial state
-	 */
-	void reset()
-	{
-		_state = ParseState::SearchPreamble;
-		_buffer_pos = 0;
-		_payload_len = 0;
-		_crc_pos = 0;
-	}
-
-private:
-	ParseState _state{ParseState::SearchPreamble};
-	uint8_t _buffer[RTCM3_MAX_FRAME_LEN];
-	uint16_t _buffer_pos{0};
-	uint16_t _payload_len{0};
-	uint8_t _crc_pos{0};
-	Statistics _stats{};
-};
-
-/**
- * RTCM Serial Injector Module
- *
- * Reads RTCM3 data from serial port and forwards to GPS via uORB.
+ * Reads raw data from serial port and forwards to GPS via uORB.
+ * No parsing, validation, or frame synchronization.
  */
 class RTCMInjector : public ModuleBase<RTCMInjector>
 {
 public:
 	RTCMInjector();
 	~RTCMInjector() override;
+
+	/** @see ModuleBase */
+	static RTCMInjector *instantiate(int argc, char *argv[]);
 
 	/** @see ModuleBase */
 	static int task_spawn(int argc, char *argv[]);
@@ -265,17 +83,19 @@ public:
 
 private:
 	struct Statistics {
-		uint32_t uorb_publish_count{0};
+		uint32_t bytes_received{0};
+		uint32_t packets_sent{0};
 		uint64_t start_time{0};
 	};
 
 	device::Serial _serial;
 	uORB::Publication<gps_inject_data_s> _gps_inject_data_pub{ORB_ID(gps_inject_data)};
-	RTCMParser _parser;
 	Statistics _stats;
+	uint32_t _read_errors{0};
+	uint32_t _publish_errors{0};
 
 	bool openSerial();
-	void publishRTCMFrame(const uint8_t *frame, uint16_t len);
+	bool forwardData(const uint8_t *data, uint16_t len);
 };
 
 RTCMInjector::RTCMInjector()
@@ -290,38 +110,39 @@ RTCMInjector::~RTCMInjector()
 
 bool RTCMInjector::openSerial()
 {
-	// Map parameter index to device path
-	const char *port_map[] = {
-		"/dev/ttyS1",  // TELEM1
-		"/dev/ttyS2",  // TELEM2
-		"/dev/ttyS3",  // TELEM3
-		"/dev/ttyS4"   // TELEM4
-	};
+	// Get parameters
+	int32_t port_idx = 1;  // Default TELEM2
+	int32_t baudrate = 230400;
 
-	// Get port index from parameter
-	int32_t port_idx = 1;  // Default: TELEM2
 	param_t port_param = param_find("RTCM_INJ_PORT");
+	param_t baud_param = param_find("RTCM_INJ_BAUD");
 
 	if (port_param != PARAM_INVALID) {
 		param_get(port_param, &port_idx);
 	}
 
-	if (port_idx < 0 || port_idx > 3) {
-		PX4_ERR("Invalid port index: %d", (int)port_idx);
-		return false;
-	}
-
-	// Get baudrate from parameter
-	int32_t baudrate = 57600;  // Default
-	param_t baud_param = param_find("RTCM_INJ_BAUD");
-
 	if (baud_param != PARAM_INVALID) {
 		param_get(baud_param, &baudrate);
 	}
 
+	// Map port index to device path (FMU-v6x specific)
+	const char *port_map[] = {
+		"/dev/ttyS6",  // TELEM1
+		"/dev/ttyS4",  // TELEM2
+		"/dev/ttyS1",  // TELEM3
+		"/dev/ttyS3"   // EXT2
+	};
+
+	if (port_idx < 0 || port_idx >= 4) {
+		PX4_ERR("Invalid port index: %d", (int)port_idx);
+		return false;
+	}
+
+	const char *port = port_map[port_idx];
+
 	// Configure serial port
-	if (!_serial.setPort(port_map[port_idx])) {
-		PX4_ERR("Failed to set port: %s", port_map[port_idx]);
+	if (!_serial.setPort(port)) {
+		PX4_ERR("Failed to set port: %s", port);
 		return false;
 	}
 
@@ -332,39 +153,42 @@ bool RTCMInjector::openSerial()
 
 	// Open serial port
 	if (!_serial.open()) {
-		PX4_ERR("Failed to open serial port: %s", port_map[port_idx]);
+		PX4_ERR("Failed to open %s", port);
 		return false;
 	}
 
-	PX4_INFO("Opened %s at %d baud", port_map[port_idx], (int)baudrate);
+	PX4_INFO("Opened %s at %d baud", port, (int)baudrate);
 	return true;
 }
 
-void RTCMInjector::publishRTCMFrame(const uint8_t *frame, uint16_t len)
+bool RTCMInjector::forwardData(const uint8_t *data, uint16_t len)
 {
-	gps_inject_data_s msg{};
-	msg.timestamp = hrt_absolute_time();
-	msg.device_id = 0;  // External radio
-
+	// Split data into chunks if needed (gps_inject_data has limited buffer)
+	constexpr size_t chunk_size = sizeof(gps_inject_data_s::data);
 	size_t offset = 0;
+	bool success = true;
 
-	// Fragment large frames into multiple uORB messages
 	while (offset < len) {
-		size_t chunk_len = len - offset;
+		gps_inject_data_s msg{};
+		msg.timestamp = hrt_absolute_time();
+		msg.device_id = 0;  // External source
 
-		if (chunk_len > sizeof(msg.data)) {
-			chunk_len = sizeof(msg.data);
+		size_t remaining = len - offset;
+		msg.len = (remaining > chunk_size) ? chunk_size : remaining;
+		msg.flags = (remaining > chunk_size) ? 1 : 0;  // 1=fragmented
+
+		memcpy(msg.data, data + offset, msg.len);
+
+		if (!_gps_inject_data_pub.publish(msg)) {
+			_publish_errors++;
+			success = false;
 		}
 
-		msg.len = chunk_len;
-		msg.flags = (offset + chunk_len < len) ? 1 : 0;  // Fragmentation flag
-		memcpy(msg.data, frame + offset, chunk_len);
-
-		_gps_inject_data_pub.publish(msg);
-		_stats.uorb_publish_count++;
-
-		offset += chunk_len;
+		offset += msg.len;
+		_stats.packets_sent++;
 	}
+
+	return success;
 }
 
 void RTCMInjector::run()
@@ -388,47 +212,69 @@ void RTCMInjector::run()
 		return;
 	}
 
-	PX4_INFO("RTCM Injector started");
+	PX4_INFO("RTCM Passthrough started - forwarding raw data to GPS");
 
-	uint8_t buffer[256];
+	// Check debug mode
+	int32_t debug_mode = 0;
+	param_t debug_param = param_find("RTCM_INJ_DEBUG");
+
+	if (debug_param != PARAM_INVALID) {
+		param_get(debug_param, &debug_mode);
+	}
+
+	uint8_t buffer[1024];
 	uint64_t last_stats_time = hrt_absolute_time();
 
 	while (!should_exit()) {
 		// Read from serial port with timeout
-		int nread = _serial.readAtLeast(buffer, sizeof(buffer), 1, 100000);  // 100ms timeout
+		int nread = _serial.readAtLeast(buffer, sizeof(buffer), 1, 10000);  // 10ms timeout
 
 		if (nread > 0) {
-			// Feed bytes to parser
-			for (int i = 0; i < nread; i++) {
-				int ret = _parser.addByte(buffer[i]);
+			// Debug: print raw bytes
+			if (debug_mode) {
+				PX4_INFO("Received %d bytes, forwarding to GPS", nread);
 
-				if (ret == 1) {
-					// Frame complete and valid
-					publishRTCMFrame(_parser.getFrame(), _parser.getFrameLength());
-					_parser.reset();
+				// Print in hex format, 16 bytes per line
+				for (int i = 0; i < nread && i < 64; i++) {  // Limit to first 64 bytes
+					if (i % 16 == 0) {
+						printf("\n  %04x: ", i);
+					}
 
-				} else if (ret == -1) {
-					// CRC error - parser already incremented error counter
-					PX4_WARN("RTCM CRC error");
+					printf("%02x ", buffer[i]);
 				}
+
+				if (nread > 64) {
+					printf("\n  ... (%d more bytes)", nread - 64);
+				}
+
+				printf("\n");
+			}
+
+			// Forward raw data to GPS
+			if (nread > (int)sizeof(buffer)) {
+				// Should never happen, but guard against corruption
+				_read_errors++;
+
+			} else {
+				forwardData(buffer, (uint16_t)nread);
+				_stats.bytes_received += nread;
 			}
 		}
 
 		// Print statistics every 10 seconds
-		uint64_t now = hrt_absolute_time();
+		if ((hrt_absolute_time() - last_stats_time) > 10000000) {
+			uint64_t uptime_s = (hrt_absolute_time() - _stats.start_time) / 1000000;
+			float rate = (uptime_s > 0) ? (float)_stats.bytes_received / uptime_s : 0.0f;
 
-		if (now - last_stats_time > 10000000) {  // 10 seconds
-			const RTCMParser::Statistics &parser_stats = _parser.getStatistics();
-			PX4_INFO("Stats: frames=%u, bytes=%u, crc_errors=%u, uorb_pubs=%u",
-				 (unsigned)parser_stats.frames_received,
-				 (unsigned)parser_stats.bytes_received,
-				 (unsigned)parser_stats.crc_errors,
-				 (unsigned)_stats.uorb_publish_count);
-			last_stats_time = now;
+			PX4_INFO("Stats: bytes=%u, packets=%u, rate=%.1f B/s, read_err=%u, pub_err=%u",
+				 (unsigned)_stats.bytes_received,
+				 (unsigned)_stats.packets_sent,
+				 (double)rate,
+				 (unsigned)_read_errors,
+				 (unsigned)_publish_errors);
+
+			last_stats_time = hrt_absolute_time();
 		}
-
-		// Sleep briefly to avoid busy-waiting
-		px4_usleep(10000);  // 10ms
 	}
 
 	_serial.close();
@@ -437,14 +283,11 @@ void RTCMInjector::run()
 
 int RTCMInjector::print_status()
 {
-	PX4_INFO("RTCM Injector: Running");
-
-	const RTCMParser::Statistics &parser_stats = _parser.getStatistics();
-	PX4_INFO("Frames received: %u", (unsigned)parser_stats.frames_received);
-	PX4_INFO("Bytes received: %u", (unsigned)parser_stats.bytes_received);
-	PX4_INFO("CRC errors: %u", (unsigned)parser_stats.crc_errors);
-	PX4_INFO("Buffer overflows: %u", (unsigned)parser_stats.buffer_overflows);
-	PX4_INFO("uORB publishes: %u", (unsigned)_stats.uorb_publish_count);
+	PX4_INFO("RTCM Passthrough: Running");
+	PX4_INFO("Bytes received: %u", (unsigned)_stats.bytes_received);
+	PX4_INFO("Packets sent to GPS: %u", (unsigned)_stats.packets_sent);
+	PX4_INFO("Read errors: %u", (unsigned)_read_errors);
+	PX4_INFO("Publish errors: %u", (unsigned)_publish_errors);
 
 	uint64_t uptime_s = (hrt_absolute_time() - _stats.start_time) / 1000000;
 	PX4_INFO("Uptime: %02llu:%02llu:%02llu",
@@ -453,34 +296,33 @@ int RTCMInjector::print_status()
 		 (unsigned long long)(uptime_s % 60));
 
 	if (uptime_s > 0) {
-		float rate = (float)parser_stats.bytes_received / uptime_s;
-		PX4_INFO("Injection rate: %.1f bytes/s", (double)rate);
+		float rate = (float)_stats.bytes_received / uptime_s;
+		PX4_INFO("Data rate: %.1f bytes/s", (double)rate);
 	}
 
 	return 0;
 }
 
+RTCMInjector *RTCMInjector::instantiate(int argc, char *argv[])
+{
+	return new RTCMInjector();
+}
+
 int RTCMInjector::task_spawn(int argc, char *argv[])
 {
-	RTCMInjector *instance = new RTCMInjector();
+	_task_id = px4_task_spawn_cmd("rtcm_injector",
+				      SCHED_DEFAULT,
+				      SCHED_PRIORITY_RTCM_INJECTOR,
+				      3072,
+				      (px4_main_t)&run_trampoline,
+				      (char *const *)argv);
 
-	if (instance) {
-		_object.store(instance);
-		_task_id = task_id_is_work_queue;
-
-		if (instance->init()) {
-			return PX4_OK;
-		}
-
-	} else {
-		PX4_ERR("alloc failed");
+	if (_task_id < 0) {
+		_task_id = -1;
+		return -errno;
 	}
 
-	delete instance;
-	_object.store(nullptr);
-	_task_id = -1;
-
-	return PX4_ERROR;
+	return PX4_OK;
 }
 
 int RTCMInjector::custom_command(int argc, char *argv[])
@@ -497,17 +339,15 @@ int RTCMInjector::print_usage(const char *reason)
 	PRINT_MODULE_DESCRIPTION(
 		R"DESCR_STR(
 ### Description
-RTCM Serial Injector reads RTCM3 differential data from a serial port
-(typically TELEM2) and forwards it to the GPS module for RTK positioning.
+RTCM Serial Passthrough module for external differential radio.
 
-The module transparently forwards RTCM3 frames without parsing message content.
-It performs frame boundary detection and CRC-24Q validation.
+Reads raw RTCM data from a serial port (TELEM1-4) and forwards it to the GPS
+device via uORB gps_inject_data topic. No parsing or validation is performed -
+the GPS device handles frame synchronization and CRC validation.
 
 ### Implementation
-- Reads from configurable serial port (TELEM1-4)
-- Parses RTCM3 frame structure (preamble, length, payload, CRC24)
-- Publishes to gps_inject_data uORB topic with fragmentation support
-- Handles frames up to 1023 bytes payload
+The module runs in its own thread and continuously reads from the configured
+serial port, forwarding all received data directly to the GPS.
 
 ### Examples
 Start the module:
@@ -516,12 +356,14 @@ $ rtcm_injector start
 Stop the module:
 $ rtcm_injector stop
 
-Query status:
+Print status:
 $ rtcm_injector status
 )DESCR_STR");
 
 	PRINT_MODULE_USAGE_NAME("rtcm_injector", "driver");
 	PRINT_MODULE_USAGE_COMMAND("start");
+	PRINT_MODULE_USAGE_COMMAND("stop");
+	PRINT_MODULE_USAGE_COMMAND("status");
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 
 	return 0;
